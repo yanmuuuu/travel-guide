@@ -2,4 +2,4 @@ langgraph
 langchain-deepseek
 pydantic
 python-dotenv
-ddgs
+httpx

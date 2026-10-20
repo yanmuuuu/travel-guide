@@ -4,6 +4,7 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.langgraph_api/
 .mypy_cache/
 .ruff_cache/
 *.egg-info/

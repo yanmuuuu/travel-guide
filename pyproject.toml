@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "travel-guide"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "langgraph",
+    "langchain-deepseek",
+    "pydantic",
+    "python-dotenv",
+    "httpx",
+]
+
+[tool.setuptools.packages.find]
+include = ["app*"]

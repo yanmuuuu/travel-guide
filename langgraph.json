@@ -1,0 +1,8 @@
+{
+  "$schema": "https://langgra.ph/schema.json",
+  "dependencies": ["."],
+  "graphs": {
+    "travel_guide": "./app/graph.py:graph"
+  },
+  "env": ".env"
+}
