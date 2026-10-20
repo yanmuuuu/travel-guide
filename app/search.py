@@ -13,7 +13,10 @@ _SEARCH_URL = (
 
 
 def search_web(query: str) -> list[dict]:
-    """用阿里云联网搜索查网页。失败时返回空列表，图会走到道歉。"""
+    """用阿里云联网搜索查网页，只要标题、链接和一段摘要。
+
+    没配密钥、没配地址，或查询是空的，直接返回空列表。请求失败也返回空列表，调用方会走到道歉，这里不抛错。
+    """
     api_key = os.getenv("ALIYUN_SEARCH_API_KEY", "").strip()
     host = os.getenv("ALIYUN_SEARCH_HOST", "").strip().rstrip("/")
     if not api_key or not host or not (query or "").strip():
@@ -43,6 +46,7 @@ def search_web(query: str) -> list[dict]:
     result = data.get("result") if isinstance(data, dict) else None
     items = result.get("search_result") if isinstance(result, dict) else []
     rows = []
+    # 没有 http 链接的丢掉。标题最多 120 字，摘要最多 500 字。
     for item in items if isinstance(items, list) else []:
         if not isinstance(item, dict):
             continue

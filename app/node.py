@@ -12,6 +12,7 @@ from app.store import fill_blanks, load_preference, remember, save_preference
 
 
 def _count(value: int) -> int:
+    """没说或填了负数，都当成 0。人数和预算不能是负的。"""
     return value if value > 0 else 0
 
 
@@ -21,10 +22,16 @@ PLAIN_BUDGET_MAX = 500
 
 
 def _people_count(state: GuideState) -> int:
+    """大人、小孩、老人加在一起。某一类没说就是 0，不计入。"""
     return state.get("adults", 0) + state.get("children", 0) + state.get("seniors", 0)
 
 
 def _budget_text(state: GuideState) -> str:
+    """把预算写成一句给模型看的话。
+
+    用户说了最低或最高，就用这一趟的总价。
+    都没说就按平价，每人每天 450 到 500 元。人数知道才乘出合计；不知道就只说单价，不当成 1 个人。
+    """
     low = state.get("budget_min", 0)
     high = state.get("budget_max", 0)
     if low and high:
@@ -46,7 +53,10 @@ def _budget_text(state: GuideState) -> str:
 
 
 def trip_text(state: GuideState) -> str:
-    """把这一趟的约束写成一段，供快答、搜索和写稿使用。"""
+    """把这一趟已经确定的条件收成一段，快答、搜索和写稿都读它。
+
+    没说的出发地、交通、人数写成「未说明」，不替用户编。有长期偏好就附在最后。
+    """
     days = state.get("days", 1)
     nights = state.get("nights", 0)
     go = state.get("transport_go") or "未说明"
@@ -74,7 +84,10 @@ def trip_text(state: GuideState) -> str:
 
 
 def _preference_text(saved: dict) -> str:
-    """长期偏好。写稿时只补充这一趟没说的内容。"""
+    """长期偏好里填过的项收成几行，空的跳过。
+
+    写稿时只用来补这一趟没写的内容，不能改掉上面已经确定的目的地、天数和预算。
+    """
     labels = (
         ("taste", "口味"),
         ("allergy", "忌口过敏"),
@@ -95,6 +108,7 @@ def _preference_text(saved: dict) -> str:
 
 
 def _message_text(message) -> str:
+    """取出一条消息里的文字。内容有时是一整段，有时拆成好几块，这里拼成一句。"""
     content = message.content if hasattr(message, "content") else message.get("content", "")
     if isinstance(content, list):
         texts = []
@@ -108,6 +122,7 @@ def _message_text(message) -> str:
 
 
 def _message_kind(message) -> str:
+    """看这条是用户还是助手。消息可能是对象，也可能是字典，两种都认。"""
     kind = getattr(message, "type", "")
     if kind:
         return kind
@@ -117,7 +132,10 @@ def _message_kind(message) -> str:
 
 
 def current_user_text(state: GuideState) -> str:
-    """这一轮说的话。认对话里最后一句用户的话。还没有用户消息时才用 user_text。"""
+    """这一轮用户说的话。
+
+    从对话末尾往前找最后一条用户消息。对话里还没有用户消息时，才用单独存的 user_text。
+    """
     for message in reversed(state.get("messages") or []):
         if _message_kind(message) in ("human", "user"):
             text = _message_text(message).strip()
@@ -127,7 +145,10 @@ def current_user_text(state: GuideState) -> str:
 
 
 def _only_if_said(value: str, text: str) -> str:
-    """这个词没出现在这一句里，就不算这一轮新说的。"""
+    """这个词出现在这一句里，才算这一轮新说的。
+
+    「杭州市」和用户说的「杭州」算同一个。上一轮沿用、这句没再提的，返回空，后面就不会写进偏好。
+    """
     value = (value or "").strip()
     if not value or not text:
         return ""
@@ -143,7 +164,10 @@ def _only_if_said(value: str, text: str) -> str:
 
 
 def dialogue_text(state: GuideState, current: str = "") -> str:
-    """之前的对话。传了 current 时，不把这一句再算进历史。"""
+    """把之前的对话拼成「用户：…」「助手：…」。
+
+    传了 current 时，最后一条如果就是这一句，先拿掉，避免同一句话既当历史又当当前。
+    """
     messages = list(state.get("messages") or [])
     if (
         current
@@ -161,7 +185,7 @@ def dialogue_text(state: GuideState, current: str = "") -> str:
 
 
 def _remember_user(state: GuideState, text: str) -> list:
-    """这句还没在对话里时，追加一条用户消息。"""
+    """这句还没在对话里时，补一条用户消息。最后一条已经是这句，就不再加。"""
     messages = state.get("messages", [])
     if messages and _message_text(messages[-1]).strip() == text:
         return []
@@ -197,12 +221,14 @@ def parse_node(state: GuideState, runtime: Runtime[ContextSchema], *, store: Bas
     days = result.days if result.days > 0 else 1
     nights = result.nights if result.nights > 0 else 0
     hotel_needed = result.hotel_needed or nights > 0
+    # 要住但没说几晚：多日行程按天数减 1。不住宿就把夜数清掉。
     if hotel_needed and nights == 0 and days > 1:
         nights = days - 1
     if not hotel_needed:
         nights = 0
     budget_min = _count(result.budget_min)
     budget_max = _count(result.budget_max)
+    # 最低比最高还大，说明说反了，对调过来。
     if budget_min and budget_max and budget_min > budget_max:
         budget_min, budget_max = budget_max, budget_min
     output = {
@@ -262,13 +288,59 @@ def quick_take_node(state: GuideState):
     }
 
 
+def _stated(saved: dict, key: str) -> str:
+    """偏好里这一项有文字才拿来拼搜索词。"""
+    value = saved.get(key) or ""
+    if not isinstance(value, str):
+        return ""
+    return value.strip()
+
+
+def _extra_queries(state: GuideState, destination: str) -> list[str]:
+    """粗搜之外，会换一批网页的条件各补一条。
+
+    兴趣、口味、住宿偏好、预算档，以及这趟有小孩或老人。
+    节奏、规划习惯、忌口只留给写稿，不单独搜。
+    """
+    saved = state.get("preferences") or {}
+    queries = []
+    interest = _stated(saved, "interest")
+    if interest:
+        queries.append(f"{destination} {interest}")
+    taste = _stated(saved, "taste")
+    if taste:
+        queries.append(f"{destination} {taste} 餐厅")
+    lodging = _stated(saved, "lodging")
+    if lodging:
+        queries.append(f"{destination} {lodging} 住宿")
+    habit = _stated(saved, "budget_habit")
+    if habit:
+        queries.append(f"{destination} {habit} 吃住")
+    if state.get("children"):
+        queries.append(f"{destination} 亲子")
+    if state.get("seniors"):
+        queries.append(f"{destination} 适合老人")
+    return queries
+
+
+def _merge_sources(sources: list[dict], found: list[dict]) -> None:
+    """按网址并进来源。已经有的页面不再加。"""
+    seen = {item.get("url") for item in sources}
+    for item in found:
+        url = item.get("url")
+        if url and url not in seen:
+            sources.append(item)
+            seen.add(url)
+
+
 """-- 采集 --
-按目的地和几天几夜去搜网页。没有目的地，或一条都没搜到，后面会去道歉。
+先按目的地和几天几夜搜路线。兴趣、口味、住宿偏好、预算档、带小孩或老人再各补一条短查询，按网址并到一起。没有目的地，或一条都没搜到，后面会去道歉。
 """
 def collect_node(state: GuideState):
     destination = (state.get("destination") or "").strip()
     if not destination:
         return {"sources": [], "rounds": 0}
+    # 路线查询带上几天几夜。有住宿、出发地、交通就写进去。没说预算就加上「平价」。
     days = state.get("days", 1)
     nights = state.get("nights", 0)
     hotel = " 住宿" if nights else ""
@@ -280,8 +352,13 @@ def collect_node(state: GuideState):
     price = ""
     if not state.get("budget_min") and not state.get("budget_max"):
         price = " 平价"
+    queries = [f"{destination}{days}天{nights}夜 路线{hotel}{transport}{price}"]
+    queries.extend(_extra_queries(state, destination))
+    sources = []
+    for query in queries:
+        _merge_sources(sources, search_web(query))
     return {
-        "sources": search_web(f"{destination}{days}天{nights}夜 路线{hotel}{transport}{price}"),
+        "sources": sources,
         "rounds": 0,
     }
 
@@ -318,6 +395,7 @@ def generate_node(state: GuideState):
 看这版攻略能不能定稿。缺资料就去补搜，写得不好就去重写。已经转过两圈就直接通过。
 """
 def critique_node(state: GuideState):
+    # rounds 到 3 就不再挑刺，直接当通过，避免一直重写。
     if state.get("rounds", 0) >= 3:
         return {"critique": {"ok": True, "action": "none", "issues": [], "search_queries": []}}
     result = model.with_structured_output(guide_critique).invoke([
@@ -336,14 +414,12 @@ def research_node(state: GuideState):
     critique = state.get("critique", {})
     queries = critique.get("search_queries", [])
     sources = list(state.get("sources", []))
-    seen = {item.get("url") for item in sources}
+    # 网址已经有的不再加。这一轮没搜到新页面，就把问题交给下一轮写稿去改。
+    before = len(sources)
     for query in queries:
-        for item in search_web(query):
-            if item.get("url") not in seen:
-                sources.append(item)
-                seen.add(item.get("url"))
+        _merge_sources(sources, search_web(query))
     feedback = ""
-    if len(sources) == len(state.get("sources", [])):
+    if len(sources) == before:
         feedback = "\n".join(critique.get("issues", []))
     return {
         "rounds": state.get("rounds", 0) + 1,
