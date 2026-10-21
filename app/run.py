@@ -3,6 +3,10 @@ from langchain_core.messages import HumanMessage
 from app.graph import builder
 from app.store import memory_saver, memory_store
 
+# xiaohongshu-mcp-windows-amd64.exe
+# 需要先启动
+
+
 # 本地运行用内存保存对话和偏好。Studio 不走这个，它自己有一套。
 graph = builder.compile(checkpointer=memory_saver, store=memory_store)
 
@@ -29,6 +33,7 @@ if __name__ == "__main__":
     print("是不是规划:", result.get("route"))
     print("目的地:", result.get("destination"))
     print("出发地:", result.get("origin"))
+    print("出发日期:", result.get("start_date"))
     print("天数:", result.get("days"))
     print("夜数:", result.get("nights"))
     print("去程:", result.get("transport_go"))
@@ -39,4 +44,5 @@ if __name__ == "__main__":
     print("小孩:", result.get("children"))
     print("老人:", result.get("seniors"))
     print("快答:", result.get("quick_take"))
+    print("天气:", result.get("weather"))
     print("结果:", result.get("final_text"))

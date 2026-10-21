@@ -12,6 +12,7 @@ dependencies = [
     "pydantic",
     "python-dotenv",
     "httpx",
+    "fastmcp",
 ]
 
 [tool.setuptools.packages.find]

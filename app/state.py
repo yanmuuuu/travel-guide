@@ -6,9 +6,10 @@ from langgraph.graph import MessagesState
 class GuideState(MessagesState):
     user_text: str          # 这一轮用户原话
 
-    route: str              # plan 继续，end 结束
+    route: str              # plan 继续，note 补充条件，end 结束
     destination: str        # 目的地
     origin: str             # 出发地，没说就空字符串
+    start_date: str         # 没写年份是「12月5日」，写了年份是 YYYY-MM-DD。没说就空字符串
     days: int               # 天数
     nights: int             # 住宿夜数，3天2夜里的 2
     hotel_needed: bool      # 要不要酒店
@@ -23,8 +24,13 @@ class GuideState(MessagesState):
     msg_id: str             # 占位消息
     quick_take: str         # 快答
     sources: list           # 采集到的网页
+    weather: str            # 按出发日期逐天查到的天气预报，没查到就空字符串
     guide: str              # 攻略正文
     critique: dict          # 自检结果
     rounds: int             # 已经重写或补搜的轮次
     feedback: str           # 这一轮要改的点
     preferences: dict       # 这次读到的长期偏好，只用来补充没说的内容
+    notes: str              # 这一趟的补充条件，例如下雨可以打伞出门。不进长期偏好
+    note_query: str         # 这一轮补充要用的那一条搜索
+    note_hits: list         # 这一轮补充搜到的网页
+    note_step: str          # 补充走到哪：judge、rewrite、keep 一类

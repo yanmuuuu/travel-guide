@@ -15,7 +15,9 @@
 | `app/graph.py` | 节点、边、编译。给 Studio 用，不自带记忆 |
 | `app/store.py` | 长期偏好。测试用内存，本地运行才接上 |
 | `app/llm.py` | DeepSeek，不开思考 |
-| `app/search.py` | 阿里云联网搜索 |
+| `app/mcp/search.py` | Tavily 联网搜索 |
+| `app/mcp/weather.py` | 国内中国天气网，海外 Open-Meteo |
+| `app/mcp/xhs.py` | 小红书笔记。没配地址就跳过 |
 | `app/run.py` | 本地跑一次，带内存对话和偏好 |
 
 深度推理不在这个仓库里。密钥放在本机 `.env`，字段见 `.env.example`。`.env` 不会进仓库。
