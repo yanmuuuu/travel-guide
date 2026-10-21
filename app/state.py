@@ -21,16 +21,17 @@ class GuideState(MessagesState):
     children: int           # 小孩人数，没说就 0
     seniors: int            # 老人人数，没说就 0
 
-    msg_id: str             # 占位消息
+    msg_id: str             # 这一轮助手回复的编号。快答和补充重写先占一条，定稿和道歉换上这条
     quick_take: str         # 快答
-    sources: list           # 采集到的网页
+    sources: list           # 采集到的网页和小红书
     weather: str            # 按出发日期逐天查到的天气预报，没查到就空字符串
     guide: str              # 攻略正文
+    final_text: str         # 这一轮交给用户的正文。定稿、道歉、闲聊、保留原计划都会写
     critique: dict          # 自检结果
-    rounds: int             # 已经重写或补搜的轮次
-    feedback: str           # 这一轮要改的点
+    rounds: int             # 这一轮已经重写或补搜的次数。新的一句规划或补充从 0 再计
+    feedback: str           # 这一轮自检要改的点。新的一句进来先清空
     preferences: dict       # 这次读到的长期偏好，只用来补充没说的内容
     notes: str              # 这一趟的补充条件，例如下雨可以打伞出门。不进长期偏好
     note_query: str         # 这一轮补充要用的那一条搜索
-    note_hits: list         # 这一轮补充搜到的网页
+    note_hits: list         # 这一轮补充搜到的网页和小红书
     note_step: str          # 补充走到哪：judge、rewrite、keep 一类

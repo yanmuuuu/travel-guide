@@ -1,6 +1,7 @@
 from datetime import date
 import asyncio
 import threading
+import uuid
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.constants import END
@@ -10,9 +11,9 @@ from langgraph.store.base import BaseStore
 from app.context import ContextSchema
 from app.llm import model
 from app.schema import guide_critique, note_fit, plan_parse
-from app.mcp.search import search_web
-from app.mcp.xhs import search_notes
-from app.mcp.weather import forecast
+from app.external.search import search_web
+from app.external.xhs import search_notes
+from app.external.weather import forecast
 from app.state import GuideState
 from app.store import fill_blanks, load_preference, remember, save_preference
 
@@ -220,6 +221,20 @@ def _remember_user(state: GuideState, text: str) -> list:
     return [HumanMessage(content=text)]
 
 
+def _fresh_message(text: str) -> tuple[str, AIMessage]:
+    """新开一条助手消息，并返回它的编号。"""
+    msg_id = str(uuid.uuid4())
+    return msg_id, AIMessage(content=text, id=msg_id)
+
+
+def _replace_message(state: GuideState, text: str) -> tuple[str, AIMessage]:
+    """这一轮已经占过一条就换上它，没有就新开一条。"""
+    msg_id = (state.get("msg_id") or "").strip()
+    if not msg_id:
+        return _fresh_message(text)
+    return msg_id, AIMessage(content=text, id=msg_id)
+
+
 """-- 听懂需求 --
 判断这句话是规划、给已有行程加条件，还是无关。加条件就记下来并只搜一次。改字段以这一句为准。只有这一句里新表达的出发地和交通才写入偏好。
 """
@@ -242,14 +257,14 @@ def parse_node(state: GuideState, runtime: Runtime[ContextSchema], *, store: Bas
     remembered = _remember_user(state, user_text)
     if result.intent == "end":
         reply = "这句不是行程规划，图在这里结束。"
+        msg_id, message = _fresh_message(reply)
         output = {
             "user_text": user_text,
             "route": "end",
             "final_text": reply,
-            "messages": [AIMessage(content=reply)],
+            "msg_id": msg_id,
+            "messages": remembered + [message],
         }
-        if remembered:
-            output["messages"] = remembered + output["messages"]
         return output
     if result.intent == "note":
         output = {
@@ -257,6 +272,9 @@ def parse_node(state: GuideState, runtime: Runtime[ContextSchema], *, store: Bas
             "route": "note",
             "notes": _append_note(state.get("notes", ""), result.note.strip()),
             "note_query": result.note_query.strip(),
+            "feedback": "",
+            "rounds": 0,
+            "msg_id": "",
         }
         if remembered:
             output["messages"] = remembered
@@ -291,6 +309,9 @@ def parse_node(state: GuideState, runtime: Runtime[ContextSchema], *, store: Bas
         "adults": _count(result.adults),
         "children": _count(result.children),
         "seniors": _count(result.seniors),
+        "feedback": "",
+        "rounds": 0,
+        "msg_id": "",
     }
     # 这一轮说了的以这一轮为准。空着的字段才用 store 里的偏好补上，再说了的就改掉旧偏好。
     # 出发地和交通必须出现在这一句里才写进偏好。从上一轮沿用来的不写。
@@ -340,8 +361,7 @@ def note_search_node(state: GuideState):
         return {"note_hits": [], "note_step": "no_plan"}
     if not query:
         return {"note_hits": [], "note_step": "no_query"}
-    found = _run(search_web(query)) or []
-    _merge_sources(found, _run(search_notes(query)) or [])
+    found = _search_both(query)
     sources = list(state.get("sources") or [])
     _merge_sources(sources, found)
     if not found:
@@ -362,12 +382,9 @@ def route_after_note_search(state: GuideState):
 新摘录能改某天去哪，或按这句话把雨天改成户外，才去重写。重复的景点留下原计划。
 """
 def note_judge_node(state: GuideState):
-    blocks = []
-    for index, source in enumerate(state.get("note_hits") or [], 1):
-        blocks.append(f"{index}. {source.get('title', '')}\n{source.get('snippet', '')}\n{source.get('url', '')}")
     result = model.with_structured_output(note_fit).invoke([
-        SystemMessage(content="你在看一句新条件和刚搜到的网页，判断要不要改已有行程。新内容能改某天去哪，或让雨天按这句话改成户外，才算能补上。只是重复已有景点就不要改。"),
-        HumanMessage(content=f"补充条件：{state.get('notes', '')}\n{trip_text(state)}\n已有行程：\n{state.get('guide', '')}\n新摘录：\n" + "\n\n".join(blocks)),
+        SystemMessage(content="你在看一句新条件和刚搜到的网页、小红书，判断要不要改已有行程。两边都算新摘录。新内容能改某天去哪，或让雨天按这句话改成户外，才算能补上。只是重复已有景点就不要改。"),
+        HumanMessage(content=f"补充条件：{state.get('notes', '')}\n{trip_text(state)}\n已有行程：\n{state.get('guide', '')}\n新摘录：\n{_format_sources(state.get('note_hits') or [])}"),
     ])
     if result.useful:
         return {"note_step": "rewrite"}
@@ -384,21 +401,20 @@ def route_after_note_judge(state: GuideState):
 
 
 """-- 按补充重写 --
-用已有行程和新摘录写一版，然后交给原来的自检。缺资料会补搜，写得不好会重写。
+用已有行程和新摘录写一版，先占一条消息，然后交给原来的自检。缺资料会补搜，写得不好会重写。定稿时换上这条。
 """
 def note_rewrite_node(state: GuideState):
-    blocks = []
-    for index, source in enumerate(state.get("note_hits") or [], 1):
-        blocks.append(f"{index}. {source.get('title', '')}\n{source.get('snippet', '')}\n{source.get('url', '')}")
     reply = model.invoke([
-        SystemMessage(content="按补充条件和摘录改写已有行程。能改的日子就改去处和顺序，其余天保持原计划。价格、班次和开放时间只使用摘录里有的，没有就标待核实。"),
-        HumanMessage(content=f"补充条件：{state.get('notes', '')}\n{trip_text(state)}\n已有行程：\n{state.get('guide', '')}\n新摘录：\n" + "\n\n".join(blocks)),
+        SystemMessage(content="按补充条件和摘录改写已有行程。网页和小红书都要参考，不要只采用其中一边。能改的日子就改去处和顺序，其余天保持原计划。价格、班次和开放时间只使用摘录里有的，没有就标待核实。"),
+        HumanMessage(content=f"补充条件：{state.get('notes', '')}\n{trip_text(state)}\n已有行程：\n{state.get('guide', '')}\n新摘录：\n{_format_sources(state.get('note_hits') or [])}"),
     ])
     guide = reply.content.strip()
+    msg_id, message = _fresh_message(guide)
     return {
         "guide": guide,
         "final_text": guide,
-        "messages": [AIMessage(content=guide)],
+        "msg_id": msg_id,
+        "messages": [message],
     }
 
 
@@ -414,23 +430,27 @@ def note_keep_node(state: GuideState):
         reply = f"搜到的内容和现有行程重复，计划先不改。这句话已经记下。\n\n{guide}"
     else:
         reply = f"按这句话搜了一轮，没有能补上的内容，行程先保持原样。\n\n{guide}"
+    msg_id, message = _fresh_message(reply)
     return {
         "final_text": reply,
-        "messages": [AIMessage(content=reply)],
+        "msg_id": msg_id,
+        "messages": [message],
     }
 
 
 """-- 快答 --
-采集还没开始，先给一句不超过 120 字的初步安排，让用户不用干等。
+采集还没开始，先占一条不超过 120 字的消息，让用户不用干等。定稿或道歉会换上这条。
 """
 def quick_take_node(state: GuideState):
     reply = model.invoke([
         SystemMessage(content="用不超过120字给出初步安排。不要编造价格、班次和开放时间。不要说你准备去搜索。"),
         HumanMessage(content=f"{trip_text(state)}\n用户原话：{state.get('user_text', '')}"),
     ])
+    msg_id, message = _fresh_message(reply.content)
     return {
         "quick_take": reply.content,
-        "messages": [AIMessage(content=reply.content)],
+        "msg_id": msg_id,
+        "messages": [message],
     }
 
 
@@ -443,7 +463,7 @@ def _stated(saved: dict, key: str) -> str:
 
 
 def _extra_queries(state: GuideState, destination: str) -> list[str]:
-    """粗搜之外，会换一批网页的条件各补一条。
+    """粗搜之外，会换一批结果的条件各补一条。网页和小红书都用这些词。
 
     兴趣、口味、住宿偏好、预算档，以及这趟有小孩或老人。
     节奏、规划习惯、忌口只留给写稿，不单独搜。
@@ -488,8 +508,38 @@ def _merge_sources(sources: list[dict], found: list[dict]) -> None:
             seen.add(url)
 
 
+def _search_both(query: str) -> list[dict]:
+    """同一条查询先搜网页，再搜小红书。一边没有结果，就只用另一边。"""
+    found = []
+    _merge_sources(found, _run(search_web(query)) or [])
+    _merge_sources(found, _run(search_notes(query)) or [])
+    return found
+
+
+def _source_kind(source: dict) -> str:
+    """标题或链接能看出是小红书的，标成小红书，其余算网页。"""
+    title = str(source.get("title") or "")
+    url = str(source.get("url") or "")
+    if title.startswith("小红书") or "xiaohongshu.com" in url:
+        return "小红书"
+    return "网页"
+
+
+def _format_sources(sources: list) -> str:
+    """把网页和小红书收成摘录。两边都没有就直接说没有。"""
+    blocks = []
+    for index, source in enumerate(sources or [], 1):
+        blocks.append(
+            f"{index}. [{_source_kind(source)}] {source.get('title', '')}\n"
+            f"{source.get('snippet', '')}\n{source.get('url', '')}"
+        )
+    if not blocks:
+        return "没有网页和小红书摘录。"
+    return "\n\n".join(blocks)
+
+
 """-- 采集 --
-先按目的地和几天几夜搜路线。兴趣、口味、住宿偏好、预算档、带小孩或老人再各补一条短查询。说了出发日期就查天气，预报里有雨或雪再搜室内景点，并进同一批网页。网页和天气至少有一样，后面就去写稿。两样都没有才道歉。
+先按目的地和几天几夜搜路线。兴趣、口味、住宿偏好、预算档、带小孩或老人再各补一条短查询。每一条都同时搜网页和小红书。说了出发日期就查天气，预报里有雨或雪再搜室内景点。有摘录或天气，后面就去写稿。
 """
 def collect_node(state: GuideState):
     destination = (state.get("destination") or "").strip()
@@ -511,14 +561,11 @@ def collect_node(state: GuideState):
     queries.extend(_extra_queries(state, destination))
     sources = []
     for query in queries:
-        _merge_sources(sources, _run(search_web(query)) or [])
-    if queries:
-        _merge_sources(sources, _run(search_notes(queries[0])) or [])
+        _merge_sources(sources, _search_both(query))
     start = (state.get("start_date") or "").strip()
     weather = _run(forecast(destination, start, days)) if start else ""
     for query in _weather_queries(destination, weather):
-        _merge_sources(sources, _run(search_web(query)) or [])
-        _merge_sources(sources, _run(search_notes(query)) or [])
+        _merge_sources(sources, _search_both(query))
     return {
         "sources": sources,
         "rounds": 0,
@@ -527,27 +574,28 @@ def collect_node(state: GuideState):
 
 
 """-- 道歉 --
-网页和天气都没有时停在这里，告诉用户这次抓不到，不再写稿。
+网页和天气都没有时停在这里，把说明换上这一轮的占位消息，不再写稿。
 """
 def apologize_node(state: GuideState):
     destination = state.get("destination") or "这次行程"
+    reply = f"没抓到{destination}的资料，这次先停在这里。"
+    msg_id, message = _replace_message(state, reply)
     return {
-        "final_text": f"没抓到{destination}的资料，这次先停在这里。",
+        "final_text": reply,
+        "msg_id": msg_id,
+        "messages": [message],
     }
 
 
 """-- 写稿 --
-有网页摘录就照着写。只有天气预报时也写，摘录里没有的价格、班次和开放时间标待核实。有修改意见时按意见重写一版。
+网页和小红书摘录都要参考，不要只采用其中一边。只有天气预报时也写。摘录里没有的价格、班次和开放时间标待核实。有修改意见时按意见重写一版。
 """
 def generate_node(state: GuideState):
-    blocks = []
-    for index, source in enumerate(state.get("sources", []), 1):
-        blocks.append(f"{index}. {source.get('title', '')}\n{source.get('snippet', '')}\n{source.get('url', '')}")
     feedback = state.get("feedback") or ""
     extra = f"\n上一版需要修改：\n{feedback}" if feedback else ""
-    excerpts = "\n\n".join(blocks) if blocks else "没有网页摘录。"
+    excerpts = _format_sources(state.get("sources", []))
     reply = model.invoke([
-        SystemMessage(content="根据给出的材料写一份中文行程。有网页摘录就以摘录为准。没有网页摘录、但有天气预报或行程条件时，仍然要写出行程。用户这一句如果改了出发日期、目的地或天数，以这一句为准，不要用旧的已确认日期压过它。行程长度按几天几夜写。夜数是酒店晚数：要写清哪一晚入住、住几晚、哪一天退房。去程从出发地到目的地，回程从目的地回到出发地；出发地没说就不要编造从哪个城市出发。去程和回程按用户给出的方式安排在第一天和最后一天，没给出的方式不要编造班次。用户说了预算就按那个总预算。用户没说预算就按平价，每人每天450到500元，含吃住和市内交通；人数已知时总花费用人数乘天数再乘这个区间，人数未知就只按这个单价选平价，不要假设人数。不要编造材料里没有的价格、班次和开放时间，这些地方标明待核实。给出了天气预报时，只能使用这份预报写天气。没有天气预报就不要写天气。预报里有雨或雪的日子，按摘录写出具体的室内去处和顺序，不要只写适合室内。摘录里没有室内去处就标明待核实。"),
+        SystemMessage(content="根据给出的材料写一份中文行程。摘录里的网页和小红书都要参考，不要只采用其中一边。两边都写到、而且和这趟条件相符的去处都安排进去；只有一边写到的也要写上。没有这些摘录、但有天气预报或行程条件时，仍然要写出行程。用户这一句如果改了出发日期、目的地或天数，以这一句为准，不要用旧的已确认日期压过它。行程长度按几天几夜写。夜数是酒店晚数：要写清哪一晚入住、住几晚、哪一天退房。去程从出发地到目的地，回程从目的地回到出发地；出发地没说就不要编造从哪个城市出发。去程和回程按用户给出的方式安排在第一天和最后一天，没给出的方式不要编造班次。用户说了预算就按那个总预算。用户没说预算就按平价，每人每天450到500元，含吃住和市内交通；人数已知时总花费用人数乘天数再乘这个区间，人数未知就只按这个单价选平价，不要假设人数。不要编造材料里没有的价格、班次和开放时间，这些地方标明待核实。给出了天气预报时，只能使用这份预报写天气。没有天气预报就不要写天气。预报里有雨或雪的日子，按摘录写出具体的室内去处和顺序，不要只写适合室内。摘录里没有室内去处就标明待核实。"),
         HumanMessage(content=f"用户原话：{state.get('user_text', '')}\n{trip_text(state)}\n摘录：\n{excerpts}{extra}"),
     ])
     return {
@@ -563,8 +611,8 @@ def critique_node(state: GuideState):
     if state.get("rounds", 0) >= 3:
         return {"critique": {"ok": True, "action": "none", "issues": [], "search_queries": []}}
     result = model.with_structured_output(guide_critique).invoke([
-        SystemMessage(content="你在检查一份行程攻略。只根据用户要求和已有摘录判断。酒店晚数必须等于夜数。给出了天气预报时，攻略里的天气必须和预报一致。有雨或雪却没有具体去处，算缺资料。补搜用短查询，不要写日期，也不要写用户原话。用户接受雨天出门就写「目的地 雨天 户外」，否则写「目的地 下雨天 室内」。缺关键资料才要求补搜，小问题就要求重写，能用就通过。"),
-        HumanMessage(content=f"用户原话：{state.get('user_text', '')}\n{trip_text(state)}\n攻略：\n{state.get('guide', '')}"),
+        SystemMessage(content="你在检查一份行程攻略。只根据用户要求和已有摘录判断。摘录里同时有网页和小红书时，两边与这趟条件相符的去处都要写进攻略；完全没有采用小红书，算写得不好，要求重写。只有一边有摘录时，按有的那一边判断。酒店晚数必须等于夜数。给出了天气预报时，攻略里的天气必须和预报一致。有雨或雪却没有具体去处，算缺资料。补搜用短查询，不要写日期，也不要写用户原话。用户接受雨天出门就写「目的地 雨天 户外」，否则写「目的地 下雨天 室内」。缺关键资料才要求补搜，小问题就要求重写，能用就通过。"),
+        HumanMessage(content=f"用户原话：{state.get('user_text', '')}\n{trip_text(state)}\n攻略：\n{state.get('guide', '')}\n摘录：\n{_format_sources(state.get('sources', []))}"),
     ])
     return {
         "critique": result.model_dump(),
@@ -572,7 +620,7 @@ def critique_node(state: GuideState):
 
 
 """-- 补搜 --
-自检指出还缺资料时，按它给的搜索词再搜一轮，把新页面并进已有来源。
+自检指出还缺资料时，按它给的搜索词再搜一轮。每条都同时搜网页和小红书，把新页面并进已有来源。
 """
 def research_node(state: GuideState):
     critique = state.get("critique", {})
@@ -581,8 +629,7 @@ def research_node(state: GuideState):
     # 网址已经有的不再加。这一轮没搜到新页面，就把问题交给下一轮写稿去改。
     before = len(sources)
     for query in queries:
-        _merge_sources(sources, _run(search_web(query)) or [])
-        _merge_sources(sources, _run(search_notes(query)) or [])
+        _merge_sources(sources, _search_both(query))
     feedback = ""
     if len(sources) == before:
         feedback = "\n".join(critique.get("issues", []))
@@ -606,13 +653,15 @@ def rewrite_node(state: GuideState):
 
 
 """-- 定稿 --
-自检通过后，把攻略正文交给用户。
+自检通过后，把攻略换上这一轮的占位消息，并写入 final_text。
 """
 def finalize_node(state: GuideState):
     guide = state.get("guide", "")
+    msg_id, message = _replace_message(state, guide)
     return {
         "final_text": guide,
-        "messages": [AIMessage(content=guide)],
+        "msg_id": msg_id,
+        "messages": [message],
     }
 
 
@@ -628,7 +677,7 @@ def route_after_parse(state: GuideState):
 
 
 """-- 采集之后往哪走 --
-有网页或天气预报就去写稿。两样都没有就去道歉。
+有网页、小红书或天气预报就去写稿。都没有就去道歉。
 """
 def route_after_collect(state: GuideState):
     if state.get("sources") or (state.get("weather") or "").strip():

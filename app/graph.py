@@ -35,7 +35,7 @@ builder.add_node("note_search", note_search_node)  # 补充条件，只搜一次
 builder.add_node("note_judge", note_judge_node)    # 新网页能不能补上
 builder.add_node("note_rewrite", note_rewrite_node)  # 能补上就重写
 builder.add_node("note_keep", note_keep_node)      # 不能补上就留原计划
-builder.add_node("collect", collect_node)        # 搜网页，有日期再查天气
+builder.add_node("collect", collect_node)        # 每条都搜网页和小红书，有日期再查天气
 builder.add_node("apologize", apologize_node)    # 网页和天气都没有就停下
 builder.add_node("generate", generate_node)      # 按摘录写行程
 builder.add_node("critique", critique_node)      # 检查能不能定稿
