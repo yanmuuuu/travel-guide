@@ -1,63 +1,46 @@
-# travel-guide
+# travel-guide · 智能旅行规划助手
 
-固定行程图，以及点了深度思考之后的 deep agent。
+基于 **LangGraph** 和 **Deep Agents** 的多智能体旅行规划系统。用户用一句话说出行程需求，系统查实时的火车票、酒店房价、天气、景点和餐馆，排好每天的路线，生成一份可以直接照着走的行程：怎么去、怎么玩、住哪、吃什么、花多少。
 
-## 文件
+## 两种模式
+
+**快速模式**：一张固定流程的 LangGraph 状态图。依次听懂需求、联网和小红书检索、查天气、写攻略，再由模型自检。资料不够就补搜，写得不好就重写，最多三轮后定稿。会记住用户的长期偏好（出发地、口味、住宿习惯）。
+
+**深度思考模式**：一个主代理指挥四个子代理，每个子代理只管一类工具，查完交回一份短报告，明细不进主对话。
+
+| 子代理 | 负责 | 数据源 |
+| --- | --- | --- |
+| route | 天气、景点和开放时间、站间交通，按地理位置排出每天的路线并画成地图 | 高德、天气、小红书、Tavily |
+| traffic | 往返火车（含中转）和航班 | 12306、飞常准 |
+| stay | 每晚落脚点附近的酒店和每晚房价 | RollingGo、Pilot、高德 |
+| food | 每顿饭前后那一站附近的餐馆和人均 | 高德、小红书 |
+
+主代理先定路线，再并行派出交通、住宿、餐饮三个子代理。遇到需要用户拍板的事（选哪趟车、住哪家、下雨要不要改期、超预算怎么办），用 LangGraph 的 `interrupt` 停下来问，用户回答后接着跑。终稿之后用户追问时，主代理会重新派子代理去查，不靠已有资料硬答。
+
+## 技术栈
+
+- **智能体框架**：LangGraph（StateGraph、条件路由、`interrupt` / `Command(resume)` 人机协同、checkpointer 和 store 记忆）、Deep Agents（主代理加子代理、`task` 派发、中间件按代理收窄工具）
+- **大模型**：DeepSeek（`langchain-deepseek`），工具调用加结构化输出
+- **MCP**：自己写的 Streamable HTTP 客户端，按白名单只开放查询类工具，接入 12306、飞常准、RollingGo 酒店、Pilot 酒店、高德地图、小红书
+- **外部接口**：高德 Web 服务 v3 和 v5（地点、周边、路线规划、专属地图）、Tavily 搜索、中国天气网和 Open-Meteo
+- **可观测**：LangSmith 追踪，LangGraph Studio 调试两张图
+- **工程**：Python 3.11、httpx 异步、Pydantic、python-dotenv
+
+## 目录
 
 ```
 app/
-├── guide/      不开深度思考的固定行程图
-├── deep/       点了深度思考之后的 deep agent
-└── external/   两张图共用的外部查询
+├── guide/      快速模式：固定流程的行程图
+├── deep/       深度思考：主代理、子代理和工具
+└── external/   两种模式共用的外部查询（MCP 和 REST）
 ```
 
-### `app/guide/` 固定行程图
-
-按租房助手的拆法，一张图三个文件，外加模型、记忆和本地运行：
-
-| 文件 | 作用 |
-| --- | --- |
-| `state.py` | 这一趟要传递的字段，含对话 |
-| `context.py` | 用户编号 |
-| `schema.py` | 听懂需求和自检要填的表 |
-| `node.py` | 节点和三个路由 |
-| `graph.py` | 节点、边、编译。给 Studio 用，不自带记忆 |
-| `store.py` | 长期偏好。测试用内存，本地运行才接上 |
-| `llm.py` | DeepSeek，不开思考 |
-| `run.py` | 本地跑一次，带内存对话和偏好 |
-
-### `app/deep/` 深度思考
-
-| 文件 | 作用 |
-| --- | --- |
-| `llm.py` | 深度思考用的 DeepSeek。思考开关关掉，避免工具多轮断掉 |
-| `tools.py` | 子代理的查询，按路线、交通、住宿、吃饭分组，外加主代理用来问人的 ask |
-| `agent.py` | 主代理和 route、traffic、stay、food 四个子代理。先排路线，再沿路线安排其余 |
-| `graph.py` | 编译好的深度思考图。给 Studio 用，不自带记忆 |
-| `run.py` | 用同一段对话编号接着跑，停下来问人 |
-
-### `app/external/` 外部查询
-
-| 文件 | 作用 |
-| --- | --- |
-| `mcp_client.py` | 几路 MCP 共用的 HTTP 调用，本身不查数据 |
-| `search.py` | Tavily 联网搜索 |
-| `weather.py` | 国内中国天气网，海外 Open-Meteo |
-| `xhs.py` | 小红书笔记。没配地址就跳过 |
-| `rail.py` | 12306 余票和票价。没配本机地址就跳过 |
-| `flight.py` | 飞常准机票票价。没配密钥就跳过 |
-| `price.py` | 景点开放时间、票价、要不要提前买。不预约 |
-| `hotel.py` | RollingGo 中文酒店每晚展示价。没配密钥时用 Pilot |
-| `food.py` | 高德餐馆评分、人均和营业时间 |
-| `amap.py` | 高德专属地图、路线、附近酒店和餐馆。没配密钥就跳过 |
-
-深度思考用的是现在招聘里常见的 Deep Agents：主代理派子代理，子代理去查 MCP，要人选时用 LangGraph 打断。密钥放在本机 `.env`，字段见 `.env.example`。`.env` 不会进仓库。
-
-在项目目录运行：
+## 运行
 
 ```powershell
-python -m app.guide.run
-python -m app.deep.run
+pip install -e .
+copy .env.example .env    # 填入各项密钥
+python -m app.guide.run   # 快速模式
+python -m app.deep.run    # 深度思考
+langgraph dev             # 在 Studio 里看两张图
 ```
-
-看 Studio 用 `langgraph dev`，里面有 `travel_guide` 和 `deep_agent` 两张图。
