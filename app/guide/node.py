@@ -8,14 +8,14 @@ from langgraph.constants import END
 from langgraph.runtime import Runtime
 from langgraph.store.base import BaseStore
 
-from app.context import ContextSchema
-from app.llm import model
-from app.schema import guide_critique, note_fit, plan_parse
+from app.guide.context import ContextSchema
+from app.guide.llm import model
+from app.guide.schema import guide_critique, note_fit, plan_parse
 from app.external.search import search_web
 from app.external.xhs import search_notes
 from app.external.weather import forecast
-from app.state import GuideState
-from app.store import fill_blanks, load_preference, remember, save_preference
+from app.guide.state import GuideState
+from app.guide.store import fill_blanks, load_preference, remember, save_preference
 
 
 def _run(coro):
@@ -315,8 +315,10 @@ def parse_node(state: GuideState, runtime: Runtime[ContextSchema], *, store: Bas
     }
     # 这一轮说了的以这一轮为准。空着的字段才用 store 里的偏好补上，再说了的就改掉旧偏好。
     # 出发地和交通必须出现在这一句里才写进偏好。从上一轮沿用来的不写。
-    user_id = runtime.context.get("user_id", "")
-    if user_id:
+    # Studio 直接跑图时经常不传 context，这时它是 None，不能对它调用 get。
+    context = runtime.context or {}
+    user_id = context.get("user_id", "") if isinstance(context, dict) else ""
+    if user_id and store is not None:
         saved = load_preference(store, user_id)
         stated = {
             "origin": result.stated_origin.strip(),
@@ -538,8 +540,28 @@ def _format_sources(sources: list) -> str:
     return "\n\n".join(blocks)
 
 
+WEATHER_UNKNOWN = "天气待核实"
+
+
+def _fixed_weather(destination: str, start: str, days: int) -> str:
+    """每一趟都查一次天气，写稿时固定放在开头。
+
+    说了出发日期：查出发日起这几天。超出能查的范围（今天起 40 天），写待核实。
+    没说出发日期：查今天起的几天，标明只作参考。
+    """
+    if start:
+        found = _run(forecast(destination, start, days)) or ""
+        if found:
+            return found
+        return f"出发日{start}的天气还查不到（只能查今天起 40 天内），{WEATHER_UNKNOWN}，出发前三天再看预报。"
+    found = _run(forecast(destination, date.today().isoformat(), min(max(days, 1), 7))) or ""
+    if found:
+        return "用户没说出发日期，下面是今天起的天气，只作参考：\n" + found
+    return f"没有查到{destination}的天气，{WEATHER_UNKNOWN}。"
+
+
 """-- 采集 --
-先按目的地和几天几夜搜路线。兴趣、口味、住宿偏好、预算档、带小孩或老人再各补一条短查询。每一条都同时搜网页和小红书。说了出发日期就查天气，预报里有雨或雪再搜室内景点。有摘录或天气，后面就去写稿。
+先按目的地和几天几夜搜路线。兴趣、口味、住宿偏好、预算档、带小孩或老人再各补一条短查询。每一条都同时搜网页和小红书。天气每次都查：有出发日期查那几天，没有就查今天起的几天作参考。预报里有雨或雪再搜室内景点。有摘录或真的查到了天气，后面就去写稿。
 """
 def collect_node(state: GuideState):
     destination = (state.get("destination") or "").strip()
@@ -563,7 +585,7 @@ def collect_node(state: GuideState):
     for query in queries:
         _merge_sources(sources, _search_both(query))
     start = (state.get("start_date") or "").strip()
-    weather = _run(forecast(destination, start, days)) if start else ""
+    weather = _fixed_weather(destination, start, days)
     for query in _weather_queries(destination, weather):
         _merge_sources(sources, _search_both(query))
     return {
@@ -595,7 +617,7 @@ def generate_node(state: GuideState):
     extra = f"\n上一版需要修改：\n{feedback}" if feedback else ""
     excerpts = _format_sources(state.get("sources", []))
     reply = model.invoke([
-        SystemMessage(content="根据给出的材料写一份中文行程。摘录里的网页和小红书都要参考，不要只采用其中一边。两边都写到、而且和这趟条件相符的去处都安排进去；只有一边写到的也要写上。没有这些摘录、但有天气预报或行程条件时，仍然要写出行程。用户这一句如果改了出发日期、目的地或天数，以这一句为准，不要用旧的已确认日期压过它。行程长度按几天几夜写。夜数是酒店晚数：要写清哪一晚入住、住几晚、哪一天退房。去程从出发地到目的地，回程从目的地回到出发地；出发地没说就不要编造从哪个城市出发。去程和回程按用户给出的方式安排在第一天和最后一天，没给出的方式不要编造班次。用户说了预算就按那个总预算。用户没说预算就按平价，每人每天450到500元，含吃住和市内交通；人数已知时总花费用人数乘天数再乘这个区间，人数未知就只按这个单价选平价，不要假设人数。不要编造材料里没有的价格、班次和开放时间，这些地方标明待核实。给出了天气预报时，只能使用这份预报写天气。没有天气预报就不要写天气。预报里有雨或雪的日子，按摘录写出具体的室内去处和顺序，不要只写适合室内。摘录里没有室内去处就标明待核实。"),
+        SystemMessage(content="根据给出的材料写一份中文行程。摘录里的网页和小红书都要参考，不要只采用其中一边。两边都写到、而且和这趟条件相符的去处都安排进去；只有一边写到的也要写上。没有这些摘录、但有天气预报或行程条件时，仍然要写出行程。用户这一句如果改了出发日期、目的地或天数，以这一句为准，不要用旧的已确认日期压过它。行程长度按几天几夜写。夜数是酒店晚数：要写清哪一晚入住、住几晚、哪一天退房。去程从出发地到目的地，回程从目的地回到出发地；出发地没说就不要编造从哪个城市出发。去程和回程按用户给出的方式安排在第一天和最后一天，没给出的方式不要编造班次。用户说了预算就按那个总预算。用户没说预算就按平价，每人每天450到500元，含吃住和市内交通；人数已知时总花费用人数乘天数再乘这个区间，人数未知就只按这个单价选平价，不要假设人数。不要编造材料里没有的价格、班次和开放时间，这些地方标明待核实。行程开头必须先写一段「天气」：条件里给的是出发日的预报，就逐天照抄，只能用这份预报；给的是今天起的参考天气，就说明出发日还没定、只作参考；写着天气待核实，就写天气待核实，并提醒出发前三天再看预报。不要自己编天气。预报里有雨或雪的日子，按摘录写出具体的室内去处和顺序，不要只写适合室内。摘录里没有室内去处就标明待核实。"),
         HumanMessage(content=f"用户原话：{state.get('user_text', '')}\n{trip_text(state)}\n摘录：\n{excerpts}{extra}"),
     ])
     return {
@@ -611,7 +633,7 @@ def critique_node(state: GuideState):
     if state.get("rounds", 0) >= 3:
         return {"critique": {"ok": True, "action": "none", "issues": [], "search_queries": []}}
     result = model.with_structured_output(guide_critique).invoke([
-        SystemMessage(content="你在检查一份行程攻略。只根据用户要求和已有摘录判断。摘录里同时有网页和小红书时，两边与这趟条件相符的去处都要写进攻略；完全没有采用小红书，算写得不好，要求重写。只有一边有摘录时，按有的那一边判断。酒店晚数必须等于夜数。给出了天气预报时，攻略里的天气必须和预报一致。有雨或雪却没有具体去处，算缺资料。补搜用短查询，不要写日期，也不要写用户原话。用户接受雨天出门就写「目的地 雨天 户外」，否则写「目的地 下雨天 室内」。缺关键资料才要求补搜，小问题就要求重写，能用就通过。"),
+        SystemMessage(content="你在检查一份行程攻略。只根据用户要求和已有摘录判断。摘录里同时有网页和小红书时，两边与这趟条件相符的去处都要写进攻略；完全没有采用小红书，算写得不好，要求重写。只有一边有摘录时，按有的那一边判断。酒店晚数必须等于夜数。攻略开头必须有一段天气，内容和条件里给的天气一致；没有这一段或和预报对不上，算写得不好，要求重写。有雨或雪却没有具体去处，算缺资料。补搜用短查询，不要写日期，也不要写用户原话。用户接受雨天出门就写「目的地 雨天 户外」，否则写「目的地 下雨天 室内」。缺关键资料才要求补搜，小问题就要求重写，能用就通过。"),
         HumanMessage(content=f"用户原话：{state.get('user_text', '')}\n{trip_text(state)}\n攻略：\n{state.get('guide', '')}\n摘录：\n{_format_sources(state.get('sources', []))}"),
     ])
     return {
@@ -623,7 +645,7 @@ def critique_node(state: GuideState):
 自检指出还缺资料时，按它给的搜索词再搜一轮。每条都同时搜网页和小红书，把新页面并进已有来源。
 """
 def research_node(state: GuideState):
-    critique = state.get("critique", {})
+    critique = state.get("critique") or {}
     queries = critique.get("search_queries", [])
     sources = list(state.get("sources", []))
     # 网址已经有的不再加。这一轮没搜到新页面，就把问题交给下一轮写稿去改。
@@ -644,7 +666,7 @@ def research_node(state: GuideState):
 资料够用、只是写得不好时，把自检的问题记下来，交给下一轮写稿。这里不自己写正文。
 """
 def rewrite_node(state: GuideState):
-    critique = state.get("critique", {})
+    critique = state.get("critique") or {}
     issues = critique.get("issues", [])
     return {
         "rounds": state.get("rounds", 0) + 1,
@@ -677,10 +699,11 @@ def route_after_parse(state: GuideState):
 
 
 """-- 采集之后往哪走 --
-有网页、小红书或天气预报就去写稿。都没有就去道歉。
+有网页、小红书或真的查到了天气就去写稿。天气只是「待核实」的说明、又没有摘录，就去道歉。
 """
 def route_after_collect(state: GuideState):
-    if state.get("sources") or (state.get("weather") or "").strip():
+    weather = (state.get("weather") or "").strip()
+    if state.get("sources") or (weather and WEATHER_UNKNOWN not in weather):
         return "generate"
     return "apologize"
 
@@ -689,7 +712,7 @@ def route_after_collect(state: GuideState):
 通过就定稿，缺资料就补搜，其余情况重写。
 """
 def route_after_critique(state: GuideState):
-    critique = state.get("critique", {})
+    critique = state.get("critique") or {}
     if critique.get("ok"):
         return "finalize"
     if critique.get("action") == "research" and critique.get("search_queries"):

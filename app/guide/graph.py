@@ -1,7 +1,7 @@
 from langgraph.constants import START, END
 from langgraph.graph import StateGraph
 
-from app.node import (
+from app.guide.node import (
     apologize_node,
     collect_node,
     critique_node,
@@ -21,8 +21,8 @@ from app.node import (
     note_rewrite_node,
     note_search_node,
 )
-from app.context import ContextSchema
-from app.state import GuideState
+from app.guide.context import ContextSchema
+from app.guide.state import GuideState
 
 
 """4.定义图"""

@@ -52,7 +52,7 @@ Application startup failed. Exiting.
 改法：
 
 - `graph.py` 的 `graph = builder.compile()` 不带 checkpointer 和 store，给 Studio 用。
-- `run.py` 里另外 `builder.compile(checkpointer=memory_saver, store=memory_store)`，给 `python -m app.run` 用。
+- `run.py` 里另外 `builder.compile(checkpointer=memory_saver, store=memory_store)`，给 `python -m app.guide.run` 用。
 
 ## 4. 没说年份的出发日期会算错
 
@@ -79,7 +79,7 @@ ModuleNotFoundError: No module named 'mcp.client'
 
 原因：在 `app` 目录里运行时，自己的 `app/mcp` 盖住了安装好的 `mcp` 包。不在项目根运行，又会报 `No module named app`。`graph.py` 本身也不负责跑一趟行程。
 
-改法：在项目根执行 `python -m app.run`。看 Studio 用 `langgraph dev`。
+改法：在项目根执行 `python -m app.guide.run`。看 Studio 用 `langgraph dev`。
 
 ## 6. 问完只有快答，走到采集就停
 

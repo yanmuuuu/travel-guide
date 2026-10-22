@@ -2,7 +2,8 @@
   "$schema": "https://langgra.ph/schema.json",
   "dependencies": ["."],
   "graphs": {
-    "travel_guide": "./app/graph.py:graph"
+    "travel_guide": "./app/guide/graph.py:graph",
+    "deep_agent": "./app/deep/graph.py:graph"
   },
   "env": ".env"
 }

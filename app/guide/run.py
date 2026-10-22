@@ -1,7 +1,7 @@
 from langchain_core.messages import HumanMessage
 
-from app.graph import builder
-from app.store import memory_saver, memory_store
+from app.guide.graph import builder
+from app.guide.store import memory_saver, memory_store
 
 # xiaohongshu-mcp-windows-amd64.exe
 # 需要先启动
