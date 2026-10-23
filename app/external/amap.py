@@ -214,30 +214,6 @@ async def place_detail(poi_id: str) -> dict:
     return detail
 
 
-async def search_restaurants(city: str, keyword: str = "") -> list[dict]:
-    """搜餐馆，并补上评分、人均和营业时间。最多 5 家。"""
-    words = (keyword or "").strip() or "餐厅"
-    return await _with_detail(words, city)
-
-
-async def search_lodging(city: str, keyword: str = "") -> list[dict]:
-    """搜酒店的评分和营业时间。可订房价在 hotel.py。最多 5 家。"""
-    words = (keyword or "").strip()
-    words = f"{words} 酒店" if words else "酒店"
-    return await _with_detail(words, city)
-
-
-async def _with_detail(keywords: str, city: str) -> list[dict]:
-    hits = await search_places(keywords, city)
-    detailed = []
-    for hit in hits[:5]:
-        extra = await place_detail(hit.get("id") or "")
-        if extra:
-            hit.update({key: value for key, value in extra.items() if value})
-        detailed.append(hit)
-    return detailed
-
-
 async def _point(client: Session, stop, city: str) -> dict | None:
     if isinstance(stop, str):
         stop = {"name": stop}

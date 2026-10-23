@@ -1,6 +1,0 @@
-langgraph
-langchain-deepseek
-pydantic
-python-dotenv
-httpx
-fastmcp

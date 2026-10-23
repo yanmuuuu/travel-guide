@@ -241,20 +241,6 @@ def _parse_40d(text: str) -> dict[date, str]:
     return found
 
 
-def _rows_by_day(rows: list[tuple], today: date, wind_index: int) -> dict[date, str]:
-    found = {}
-    cursor = today
-    for row in rows:
-        cursor = _advance_to(cursor, int(row[0]))
-        if cursor is None:
-            break
-        weather, high, low = row[1], row[2], row[3]
-        wind = row[wind_index] if wind_index < len(row) else ""
-        found[cursor] = _format_line(cursor, weather, low, high, wind)
-        cursor = cursor + timedelta(days=1)
-    return found
-
-
 def _advance_to(cursor: date, day_num: int) -> date | None:
     """从当前日期往前找到这个日号。跨月就继续加。"""
     for _ in range(40):

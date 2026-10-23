@@ -1,12 +1,11 @@
-from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.store.base import BaseStore
-from langgraph.store.memory import InMemoryStore
 from pydantic import BaseModel, Field
 
+from app.db import make_saver, make_store
 
-"""测试用，数据只活在这次进程里，关掉就没了。以后换成数据库时，只替换这两个对象。"""
-memory_store = InMemoryStore()   # 长期偏好：口味、忌口、常驻城市，跨多次出行
-memory_saver = InMemorySaver()   # 这一段对话：上一轮说了什么
+"""配了 DATABASE_URL 存进 Postgres，没配就放内存。"""
+memory_store = make_store()   # 长期偏好：口味、忌口、常驻城市，跨多次出行
+memory_saver = make_saver()   # 这一段对话：上一轮说了什么
 
 
 """用户偏好。只放下次出行仍然成立的内容，不记这一趟的天数、人数和总价。"""

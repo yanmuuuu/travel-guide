@@ -71,6 +71,39 @@ def _price_text(prices) -> str:
     return " ".join(parts) if parts else "票价待核实"
 
 
+def _fare_text(fares: list[dict]) -> str:
+    """一趟车的全部席别：余票、原价、折后价。卖完的也列出来，写「无票」。"""
+    if not fares:
+        return "票价待核实"
+    parts = []
+    for row in fares:
+        left = row.get("left") or "余票待核实"
+        if left == "无":
+            left = "无票"
+        elif left == "有":
+            left = "有票"
+        elif left.isdigit():
+            left = f"剩{left}张"
+        price = row.get("price")
+        if price is None:
+            money = "票价待核实"
+        elif row.get("discount"):
+            money = f"原价{price:g}元 {row['discount'] / 10:g}折 约{row['final']}元"
+        else:
+            money = f"{price:g}元（折扣待核实）"
+        parts.append(f"{row['seat']} {left} {money}")
+    return "；".join(parts)
+
+
+def _cheapest_fare(fares: list[dict]) -> float:
+    """有票的席别里，折后最低的那个价。全卖完了就当很贵，不会被标成最便宜。"""
+    prices = [
+        row["final"] for row in fares or []
+        if row.get("final") is not None and row.get("left") not in ("无", "")
+    ]
+    return min(prices) if prices else 10 ** 9
+
+
 def _yuan(value) -> float:
     """票价字符串换成数字，比较便宜贵用。读不出就当很贵。"""
     try:
@@ -209,10 +242,12 @@ def train(
     depart_after、arrive_before 写 HH:MM，例如去程要中午前到就写 arrive_before="12:00"。
     kind 写车型首字母，例如 "G"、"GD"。不填就不限。
     最多列 10 趟，并标出最快和最便宜的。一趟都没有时，自动查中转。
+    每趟列出全部席别（商务座、一等座、二等座、无座等）的余票、原价、折扣和折后价。
+    「最便宜」按还有票的席别里折后最低的算。
     """
     rows = _safe(query_trains(origin, destination, day), [])
     if len(rows) == 1 and rows[0].get("note") and not rows[0].get("train_code"):
-        return f"{rows[0]['note']}。这一天还不能查，写待核实，不要编班次。"
+        return f"{rows[0]['note']}。照这句原话交回，写待核实，不要编班次，也不要自己猜别的原因。"
     if not rows:
         return transfer.invoke({"origin": origin, "destination": destination, "day": day})
     kinds = (kind or "").upper().strip()
@@ -234,7 +269,7 @@ def train(
         return head + "条件太紧，放宽时间或车型再查一次。"
     picked.sort(key=lambda row: str(row.get("start_time") or ""))
     fastest = min(picked, key=lambda row: str(row.get("duration") or "99:99"))
-    cheapest = min(picked, key=lambda row: min((_yuan(v) for v in (row.get("prices") or {}).values()), default=10 ** 9))
+    cheapest = min(picked, key=lambda row: _cheapest_fare(row.get("fares")))
     lines = [head]
     for row in picked[:10]:
         marks = []
@@ -247,7 +282,7 @@ def train(
             f"{row.get('train_code') or '车次待核实'}{mark} "
             f"{row.get('from_station') or origin} {row.get('start_time') or '?'} → "
             f"{row.get('to_station') or destination} {row.get('arrive_time') or '?'} "
-            f"历时{row.get('duration') or '?'} | 余票：{row.get('seats') or '待核实'} | {_price_text(row.get('prices'))}"
+            f"历时{row.get('duration') or '?'}\n    {_fare_text(row.get('fares'))}"
         )
     if len(picked) > 10:
         lines.append(f"还有{len(picked) - 10}趟没列出，需要可以加时间条件再查。")
@@ -259,7 +294,7 @@ def transfer(origin: str, destination: str, day: str, middle: str = "") -> str:
     """查火车中转。没有直达，或直达都不合适时用。middle 可指定中转站。最多 10 套，按总时长排。"""
     plans = _safe(query_transfer(origin, destination, day, middle), [])
     if len(plans) == 1 and plans[0].get("note"):
-        return f"{plans[0]['note']}。写待核实，不要编班次。"
+        return f"{plans[0]['note']}。照这句原话交回，写待核实，不要编班次，也不要自己猜别的原因。"
     if not plans:
         return "没有直达，也没有查到中转。考虑飞机或写待核实。"
     lines = [f"{day} {origin}到{destination} 中转方案："]
