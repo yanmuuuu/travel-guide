@@ -4,6 +4,8 @@ from datetime import date, timedelta
 from pathlib import Path
 
 import httpx
+
+from app.dates import next_month_day
 from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
@@ -104,14 +106,10 @@ def _calendar_days(wanted: list[tuple[int | None, int, int]]) -> list[date]:
 
 
 def _resolve_day(year: int | None, month: int, day_num: int, today: date) -> date | None:
-    """没写年份时，在今天起 40 天里找这个月日。"""
+    """没写年份时，今年这一天没过就是今年，过了就是明年。"""
     if year is not None:
         return _make_date(year, month, day_num)
-    for offset in range(40):
-        current = today + timedelta(days=offset)
-        if current.month == month and current.day == day_num:
-            return current
-    return None
+    return next_month_day(month, day_num, today)
 
 
 async def _china_code(client: httpx.AsyncClient, area: str) -> str:

@@ -11,3 +11,4 @@ __pycache__/
 dist/
 build/
 eval_results.json
+node_modules/

@@ -8,6 +8,7 @@ from langgraph.constants import END
 from langgraph.runtime import Runtime
 from langgraph.store.base import BaseStore
 
+from app.dates import next_month_day
 from app.guide.context import ContextSchema
 from app.guide.llm import model
 from app.guide.schema import guide_critique, note_fit, plan_parse
@@ -181,7 +182,7 @@ def current_user_text(state: GuideState) -> str:
 
 
 def _start_date(year: int, month: int, day: int) -> str:
-    """把模型收好的年月日收成出发日期。没有四位年份就只留月日。"""
+    """把模型收好的年月日收成出发日期。没说年份时按今天往后推最近的那一天。"""
     if not 1 <= month <= 12 or not 1 <= day <= 31:
         return ""
     if year > 0:
@@ -189,7 +190,8 @@ def _start_date(year: int, month: int, day: int) -> str:
             return date(year, month, day).isoformat()
         except ValueError:
             return ""
-    return f"{month}月{day}日"
+    found = next_month_day(month, day)
+    return found.isoformat() if found else ""
 
 
 def dialogue_text(state: GuideState, current: str = "") -> str:

@@ -1,9 +1,11 @@
 import json
 import os
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 
 import httpx
+
+from app.dates import next_month_day
 from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
@@ -129,12 +131,7 @@ def rows(data, *keys: str) -> list[dict]:
 
 
 def _resolve_month_day(month: int, day: int) -> date | None:
-    today = date.today()
-    for offset in range(40):
-        current = today + timedelta(days=offset)
-        if current.month == month and current.day == day:
-            return current
-    return None
+    return next_month_day(month, day)
 
 
 def _make_date(year: int, month: int, day: int) -> date | None:
